@@ -1,0 +1,13 @@
+{
+	"name": "F# (.NET)",
+	"image": "mcr.microsoft.com/devcontainers/dotnet:9.0",
+	"customizations": {
+		"vscode": {		
+			"extensions": [
+				"Ionide.Ionide-fsharp",
+				"ms-dotnettools.csharp"
+			]
+		}
+	},
+	"postCreateCommand": "dotnet tool install --global fantomas"
+}
