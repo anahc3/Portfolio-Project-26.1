@@ -57,9 +57,8 @@ let main argv =
 
     match mode with
     | "benchmark" ->
-        // 50 combinações × 1000 sims × 5 rodadas — termina em ~30s
         let tickers, matrix = getOrFetchData cacheFile dowJonesTickers trainStart trainEnd
-        benchmark tickers matrix nSelect 1_000 5 50
+        benchmark tickers matrix nSelect 10_000 5 500
 
     | "test" ->
         let bestFile = "best_portfolio.txt"
@@ -93,7 +92,7 @@ let main argv =
         printfn "Simulations per combination: %s\n" (nSimPerCombo.ToString("N0"))
 
         let sw         = Diagnostics.Stopwatch.StartNew()
-        let bestResult = runOptimization tickers matrix nSelect nSimPerCombo -1 1000
+        let bestResult = runOptimization tickers matrix nSelect nSimPerCombo 1000
         sw.Stop()
 
         printfn "\nTotal optimization time: %.1f min (%.0f s)" sw.Elapsed.TotalMinutes sw.Elapsed.TotalSeconds

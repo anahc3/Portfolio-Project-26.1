@@ -2,7 +2,6 @@ module Simulation
 
 open System
 open System.Threading
-open System.Threading.Tasks
 open Portfolio
 
 /// Generate all combinations of k elements from [0..n-1]
@@ -24,8 +23,15 @@ let combinations (n: int) (k: int) : int array seq =
                 yield Array.copy indices
     }
 
-/// Pure: simula nSim carteiras para uma combinação e retorna a melhor
-/// Cada chamada recebe seu próprio seed — sem estado global, função pura
+/// Pure: funções auxiliares do pipeline
+let avaliarCarteira (tickers: string array) (subMat: float[,]) (cov: float[,]) (weights: float array) =
+    evaluatePortfolio tickers weights subMat cov
+
+let carteiraValida (r: PortfolioResult) =
+    r.SharpeRatio > 0.0
+
+/// Pure: simula nSim carteiras para uma combinação e retorna a melhor.
+/// Cada chamada recebe seu próprio seed — sem estado global, função pura.
 let simulateBestPortfolio
     (seed: int)
     (nSim: int)
@@ -33,32 +39,40 @@ let simulateBestPortfolio
     (subMat: float[,])
     (cov: float[,]) : PortfolioResult option =
 
-    let rng = Random(seed)
-    let n   = tickers.Length
+    let rng           = Random(seed)
+    let n             = tickers.Length
+    let avaliar       = avaliarCarteira tickers subMat cov
+    let mutable best  : PortfolioResult option = None
+    let mutable bestSharpe = Double.NegativeInfinity
 
-    // Pipeline funcional explícito:
-    // gera pesos → avalia carteira → filtra válidas (Sharpe > 0) → pega a melhor
-    let avaliarCarteira weights =
-        evaluatePortfolio tickers weights subMat cov
+    // Pipeline por simulação: gera pesos → avalia → filtra carteiraValida → atualiza melhor
+    for _ in 1 .. nSim do
+        match generateValidWeights rng n with
+        | None -> ()
+        | Some weights ->
+            let r = avaliar weights          // avalia — puro
+            if carteiraValida r && r.SharpeRatio > bestSharpe then
+                bestSharpe <- r.SharpeRatio
+                best       <- Some r
+    best
 
-    let carteiraValida (r: PortfolioResult) =
-        r.SharpeRatio > 0.0
+/// Async wrapper — envelopa o cálculo puro para usar com Async.Parallel
+let simulateBestPortfolioAsync
+    (seed: int)
+    (nSim: int)
+    (tickers: string array)
+    (subMat: float[,])
+    (cov: float[,]) : Async<PortfolioResult option> =
+    async {
+        return simulateBestPortfolio seed nSim tickers subMat cov
+    }
 
-    Array.init nSim (fun _ -> generateValidWeights rng n)
-    |> Array.choose id                           // descarta pesos inválidos (None)
-    |> Array.map avaliarCarteira                 // avalia cada carteira — puro
-    |> Array.filter carteiraValida              // filtra carteiras com Sharpe positivo
-    |> function
-       | [||] -> None
-       | valid -> valid |> Array.maxBy (fun r -> r.SharpeRatio) |> Some
-
-/// Run full optimization in parallel across all combinations
+/// Run full optimization — paralelo via Async.Parallel (padrão funcional F#)
 let runOptimization
     (allTickers: string array)
     (returnsMatrix: float[,])
     (nSelect: int)
     (nSimPerCombo: int)
-    (parallelDegree: int)
     (progressInterval: int) : PortfolioResult option =
 
     let nTotal = allTickers.Length
@@ -67,44 +81,39 @@ let runOptimization
     printfn "Total combinations C(%d,%d) = %d" nTotal nSelect combos.Length
     printfn "Simulations per combination: %d" nSimPerCombo
     printfn "Total simulations: %d" (int64 combos.Length * int64 nSimPerCombo)
-    printfn "Parallel degree: %s" (if parallelDegree = -1 then "max" else string parallelDegree)
+    printfn "CPUs available: %d" Environment.ProcessorCount
     printfn "Starting parallel Monte Carlo optimization..."
 
-    let mutable bestResult : PortfolioResult option = None
-    let mutable bestSharpe = Double.NegativeInfinity
-    let lockObj            = obj()
-    let mutable processed  = 0
+    let mutable processed = 0
 
-    let options = ParallelOptions(MaxDegreeOfParallelism = parallelDegree)
+    // Async.Parallel — padrão funcional F#, cada async é puro
+    let results =
+        combos
+        |> Array.mapi (fun i indices ->
+            async {
+                let subTickers = indices |> Array.map (fun idx -> allTickers.[idx])
+                let subMat     = subMatrix returnsMatrix indices
+                let cov        = covarianceMatrix subMat
+                let result     = simulateBestPortfolio i nSimPerCombo subTickers subMat cov
 
-    Parallel.For(0, combos.Length, options, fun i ->
-        let indices    = combos.[i]
-        let subTickers = indices |> Array.map (fun idx -> allTickers.[idx])
-        let subMat     = subMatrix returnsMatrix indices
-        let cov        = covarianceMatrix subMat
-        let result     = simulateBestPortfolio i nSimPerCombo subTickers subMat cov
+                let current = Interlocked.Increment(&processed)
+                if current % progressInterval = 0 || current = combos.Length then
+                    let pct = float current / float combos.Length * 100.0
+                    printfn "[%s] Progress: %d/%d (%.1f%%)"
+                        (DateTime.Now.ToString("HH:mm:ss")) current combos.Length pct
 
-        match result with
-        | Some r ->
-            lock lockObj (fun () ->
-                if r.SharpeRatio > bestSharpe then
-                    bestSharpe <- r.SharpeRatio
-                    bestResult <- Some r)
-        | None -> ()
+                return result
+            })
+        |> Async.Parallel
+        |> Async.RunSynchronously
 
-        let current = Interlocked.Increment(&processed)
-        if current % progressInterval = 0 || current = combos.Length then
-            let pct = float current / float combos.Length * 100.0
-            let currentBest =
-                lock lockObj (fun () ->
-                    match bestResult with
-                    | Some r -> sprintf "%.4f" r.SharpeRatio
-                    | None   -> "N/A")
-            printfn "[%s] Progress: %d/%d (%.1f%%) | Best Sharpe so far: %s"
-                (DateTime.Now.ToString("HH:mm:ss")) current combos.Length pct currentBest
-    ) |> ignore
-
-    bestResult
+    // Pipeline funcional: filtra válidas → pega a melhor
+    results
+    |> Array.choose id
+    |> Array.filter carteiraValida
+    |> function
+       | [||] -> None
+       | valid -> valid |> Array.maxBy (fun r -> r.SharpeRatio) |> Some
 
 /// Sequential version for benchmarking comparison
 let runOptimizationSequential
@@ -132,7 +141,7 @@ let runOptimizationSequential
 
         match result with
         | Some r ->
-            if r.SharpeRatio > bestSharpe then
+            if carteiraValida r && r.SharpeRatio > bestSharpe then
                 bestSharpe <- r.SharpeRatio
                 bestResult <- Some r
         | None -> ()
@@ -143,7 +152,7 @@ let runOptimizationSequential
 
     bestResult
 
-/// Benchmark: paralelo vs sequencial — 5 rodadas, subconjunto pequeno
+/// Benchmark: sequencial PRIMEIRO (hardware frio), paralelo depois
 let benchmark
     (allTickers: string array)
     (returnsMatrix: float[,])
@@ -156,37 +165,55 @@ let benchmark
 
     printfn "\n=== BENCHMARK: %d runs, %d combinations, %d sims each ===" nRuns subsetSize nSimPerCombo
 
-    let parallelTimes =
-        Array.init nRuns (fun _ ->
-            let sw = Diagnostics.Stopwatch.StartNew()
-            let options = ParallelOptions(MaxDegreeOfParallelism = -1)
-            Parallel.For(0, combos.Length, options, fun i ->
-                let indices    = combos.[i]
-                let subTickers = indices |> Array.map (fun idx -> allTickers.[idx])
-                let subMat     = subMatrix returnsMatrix indices
-                let cov        = covarianceMatrix subMat
-                simulateBestPortfolio i nSimPerCombo subTickers subMat cov |> ignore
-            ) |> ignore
-            sw.Elapsed.TotalSeconds)
+    let runSeq () =
+        let sw = Diagnostics.Stopwatch.StartNew()
+        for i in 0 .. combos.Length - 1 do
+            let indices    = combos.[i]
+            let subTickers = indices |> Array.map (fun idx -> allTickers.[idx])
+            let subMat     = subMatrix returnsMatrix indices
+            let cov        = covarianceMatrix subMat
+            simulateBestPortfolio i nSimPerCombo subTickers subMat cov |> ignore
+        sw.Elapsed.TotalSeconds
 
-    let sequentialTimes =
-        Array.init nRuns (fun _ ->
-            let sw = Diagnostics.Stopwatch.StartNew()
-            for i in 0 .. combos.Length - 1 do
-                let indices    = combos.[i]
+    let runPar () =
+        let sw = Diagnostics.Stopwatch.StartNew()
+        combos
+        |> Array.mapi (fun i indices ->
+            async {
                 let subTickers = indices |> Array.map (fun idx -> allTickers.[idx])
                 let subMat     = subMatrix returnsMatrix indices
                 let cov        = covarianceMatrix subMat
-                simulateBestPortfolio i nSimPerCombo subTickers subMat cov |> ignore
-            sw.Elapsed.TotalSeconds)
+                return simulateBestPortfolio i nSimPerCombo subTickers subMat cov
+            })
+        |> Async.Parallel
+        |> Async.RunSynchronously
+        |> ignore
+        sw.Elapsed.TotalSeconds
+
+    // Sequencial primeiro (hardware frio), paralelo depois
+    printfn "\n→ Modo SEQUENCIAL:"
+    let sequentialTimes = Array.init nRuns (fun i ->
+        let t = runSeq ()
+        printfn "  [SEQ] run %d: %.2f s" (i + 1) t
+        t)
+
+    printfn "\n→ Modo PARALELO:"
+    let parallelTimes = Array.init nRuns (fun i ->
+        let t = runPar ()
+        printfn "  [PAR] run %d: %.2f s" (i + 1) t
+        t)
 
     let avgParallel   = Array.average parallelTimes
     let avgSequential = Array.average sequentialTimes
     let speedup       = avgSequential / avgParallel
 
-    printfn "\nParallel times (s):   %A" parallelTimes
-    printfn "Sequential times (s): %A" sequentialTimes
-    printfn "\nAvg Parallel:   %.3f s" avgParallel
-    printfn "Avg Sequential: %.3f s" avgSequential
-    printfn "Speedup:        %.2fx" speedup
-    printfn "CPUs available: %d" Environment.ProcessorCount
+    printfn "\n════════════════════════════════════════════════"
+    printfn " RESULTADOS (%d runs, %d combos × %d sims)" nRuns subsetSize nSimPerCombo
+    printfn "════════════════════════════════════════════════"
+    printfn " Sequencial : média = %.2f s | min = %.2f s | max = %.2f s"
+        avgSequential (Array.min sequentialTimes) (Array.max sequentialTimes)
+    printfn " Paralelo   : média = %.2f s | min = %.2f s | max = %.2f s"
+        avgParallel (Array.min parallelTimes) (Array.max parallelTimes)
+    printfn " Speedup    : %.2fx" speedup
+    printfn " CPUs       : %d" Environment.ProcessorCount
+    printfn "════════════════════════════════════════════════"
