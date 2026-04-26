@@ -39,13 +39,6 @@ PortfolioOptimizer/
 └── PortfolioOptimizer.fsproj
 ```
 
-### Por que F#?
-
-- **Funções puras** eliminam efeitos colaterais e tornam o raciocínio sobre concorrência trivial
-- **Ausência de estado compartilhado** permite paralelismo seguro sem necessidade de locks
-- Abstrações de **map/filter/reduce** se encaixam perfeitamente na estrutura do problema
-- Paradigma ideal para pipelines massivamente paralelas e determinísticas
-
 ### Pipeline funcional
 
 ```fsharp
