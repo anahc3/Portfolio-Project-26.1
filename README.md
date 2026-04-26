@@ -42,15 +42,19 @@ PortfolioOptimizer/
 ### Por que F#?
 
 - **Funções puras** eliminam efeitos colaterais e tornam o raciocínio sobre concorrência trivial
-- **Ausência de estado compartilhado** permite paralelismo seguro sem locks desnecessários
+- **Ausência de estado compartilhado** permite paralelismo seguro sem necessidade de locks
 - Abstrações de **map/filter/reduce** se encaixam perfeitamente na estrutura do problema
 - Paradigma ideal para pipelines massivamente paralelas e determinísticas
 
 ### Pipeline funcional
 
 ```fsharp
-carteirasPossiveis
-|> Array.Parallel.map avaliarCombinação   // paralelismo entre combinações
+combos
+|> Array.mapi (fun i indices -> async { return simulateBestPortfolio i nSim ... })
+|> Async.Parallel          // paralelismo entre combinações — cada async é puro
+|> Async.RunSynchronously
+|> Array.choose id
+|> Array.filter carteiraValida        // filtra Sharpe > 0
 |> Array.maxBy (fun r -> r.SharpeRatio)  // melhor carteira global
 ```
 
@@ -65,16 +69,18 @@ carteirasPossiveis
 | `sharpeRatio` | $SR = \mu / \sigma$ |
 | `generateValidWeights` | Gera pesos aleatórios válidos (soma=1, max=0.2) |
 | `simulateBestPortfolio` | Melhor carteira de N simulações para uma combinação |
+| `avaliarCarteira` | Avalia uma carteira dado um vetor de pesos |
+| `carteiraValida` | Filtra carteiras com Sharpe positivo |
 
 ### Paralelismo
 
-O paralelismo é aplicado **entre combinações** usando `Parallel.For` do .NET com funções **puras** — cada thread recebe seu próprio seed, sua própria sub-matriz e não compartilha estado mutável. O único estado compartilhado é protegido por um `lock` mínimo para atualizar o melhor resultado global.
+O paralelismo é aplicado **entre combinações** usando `Async.Parallel` — o padrão funcional idiomático de F#. Cada `async` encapsula uma chamada pura a `simulateBestPortfolio`, recebendo seu próprio seed e sua própria sub-matriz, sem compartilhar estado mutável.
 
 ```
-Combinação 1 ─── Thread A ─── simulateBestPortfolio(seed=0, ...) ─┐
-Combinação 2 ─── Thread B ─── simulateBestPortfolio(seed=1, ...) ─┤─► max Sharpe
-Combinação 3 ─── Thread C ─── simulateBestPortfolio(seed=2, ...) ─┤
-     ...                                                            ┘
+Combinação 1 ─── Async ─── simulateBestPortfolio(seed=0, ...) ─┐
+Combinação 2 ─── Async ─── simulateBestPortfolio(seed=1, ...) ─┤─► filter → maxBy Sharpe
+Combinação 3 ─── Async ─── simulateBestPortfolio(seed=2, ...) ─┤
+     ...                                                         ┘
 ```
 
 ---
@@ -83,15 +89,14 @@ Combinação 3 ─── Thread C ─── simulateBestPortfolio(seed=2, ...) �
 
 ### Pré-requisitos
 
-- [.NET SDK 8.0+](https://dotnet.microsoft.com/download) — verifique com `dotnet --version`
+- [.NET SDK 9.0+](https://dotnet.microsoft.com/download) — verifique com `dotnet --version`
 - Acesso à internet (para buscar dados do Yahoo Finance na primeira execução)
 
 ### Clone e build
 
 ```bash
 git clone <url-do-repositorio>
-cd portfolio-optimizer/PortfolioOptimizer
-dotnet restore
+cd PortfolioOptimizer
 dotnet build -c Release
 ```
 
@@ -107,17 +112,11 @@ Todos os comandos devem ser rodados dentro de `PortfolioOptimizer/`.
 dotnet run -c Release -- optimize
 ```
 
-Ou após build:
-
-```bash
-dotnet bin/Release/net8.0/PortfolioOptimizer.dll optimize
-```
-
 - Busca dados do Yahoo Finance (2º sem. 2025) e salva em `returns_cache.csv`
-- Roda $\binom{30}{20} \approx 30M$ combinações × 1M simulações em paralelo
+- Roda $\binom{30}{20} \approx 30M$ combinações × 1M simulações em paralelo via `Async.Parallel`
 - Imprime a melhor carteira ao final e salva em `best_portfolio.txt`
 
-> ⚠️ **Aviso de tempo**: a execução completa pode levar horas dependendo do hardware. Para testar rapidamente, reduza `nSimPerCombo` no `Program.fs`.
+> ⚠️ **Aviso de tempo**: a execução completa pode levar horas dependendo do hardware. Para testar rapidamente, reduza `nSimPerCombo` em `Program.fs` e adicione `Seq.truncate N` em `Simulation.fs`.
 
 ### 2. Benchmark: paralelo vs sequencial
 
@@ -125,7 +124,7 @@ dotnet bin/Release/net8.0/PortfolioOptimizer.dll optimize
 dotnet run -c Release -- benchmark
 ```
 
-Executa 5 rodadas com as primeiras 100 combinações e 10.000 simulações cada, comparando tempo paralelo vs sequencial. Exibe speedup e número de CPUs utilizadas.
+Executa 5 rodadas em modo sequencial e 5 em modo paralelo sobre um subconjunto de combinações, comparando tempos e exibindo o speedup obtido. O sequencial roda primeiro (hardware frio) para garantir comparação justa.
 
 ### 3. Teste out-of-sample (Q1 2025)
 
@@ -157,54 +156,59 @@ MRK   MSFT  NKE   PG    SHW   TRV   UNH   V     VZ    WMT
 
 ---
 
-## Resultados Esperados
+## Resultados
 
-### Exemplo de saída — otimização
+### Otimização — amostra de validação
+
+> **Nota:** Os resultados abaixo foram gerados com uma amostra reduzida (200 combinações × 100 simulações) para fins de validação. O código completo suporta a execução integral com C(30,20) = 30.045.015 combinações × 1.000.000 simulações — basta remover o `Seq.truncate` em `Simulation.fs` e ajustar `nSimPerCombo` em `Program.fs`.
 
 ```
 ════════════════════════════════════════
  BEST PORTFOLIO FOUND
 ════════════════════════════════════════
- Sharpe Ratio:          1.8432
- Annualized Return:     24.71%
- Annualized Volatility: 13.41%
+ Sharpe Ratio:          3.2871
+ Annualized Return:     37.26%
+ Annualized Volatility: 11.34%
  Selected Tickers (20):
-   UNH     20.00%
-   GS      18.73%
-   MSFT    15.22%
+   GS      11.63%
+   JNJ     11.49%
+   TRV     10.80%
+   INTC    10.53%
+   CVX     10.12%
    ...
 ════════════════════════════════════════
 ```
 
-### Exemplo de saída — benchmark
+### Teste out-of-sample — Q1 2025
 
 ```
-=== BENCHMARK: 5 runs, first 100 combinations, 10000 sims each ===
-
-Avg Parallel:   0.412 s
-Avg Sequential: 3.187 s
-Speedup:        7.74x
-CPUs available: 8
+════════════════════════════════════════
+ OUT-OF-SAMPLE TEST: Q1 2025
+════════════════════════════════════════
+ Sharpe Ratio:          1.0975
+ Annualized Return:     16.34%
+ Annualized Volatility: 14.89%
+════════════════════════════════════════
 ```
 
-### Teste out-of-sample
+A queda do Sharpe de 3.29 → 1.10 é esperada e saudável: a carteira foi otimizada em dados passados e ainda assim gerou retorno positivo fora da amostra.
 
-Os resultados apresentados foram gerados com uma amostra reduzida (200 combinações × 100 simulações) para fins de validação. O código completo suporta a execução integral com C(30,20) = 30.045.015 combinações × 1.000.000 simulações; basta remover o Seq.truncate em Simulation.fs e ajustar nSimPerCombo em Program.fs.
+### Benchmark — paralelo vs sequencial
 
-![alt text](image.png)
+![Benchmark result](image.png)
 
 ---
 
 ## Dependências
 
-Apenas bibliotecas **nativas do .NET 8** — sem pacotes externos:
+Apenas bibliotecas **nativas do .NET 9** — sem pacotes externos:
 
 | Namespace | Uso |
 |-----------|-----|
 | `System.Net.Http` | Requisições HTTP para Yahoo Finance |
 | `System.Text.Json` | Parse da resposta JSON |
-| `System.Threading.Tasks` | `Parallel.For` para paralelismo |
-| `System.Threading` | `Interlocked` para contadores thread-safe |
+| `System.Threading` | `Interlocked` para contadores de progresso |
+| `Microsoft.FSharp.Control` | `Async.Parallel` para paralelismo funcional |
 
 ---
 
@@ -225,15 +229,18 @@ Portfolio.fs
   sharpeRatio          : pesos → matriz → cov → float       [pura]
   generateValidWeights : rng → n → float[] option           [pura*]
   evaluatePortfolio    : ... → PortfolioResult              [pura]
+  avaliarCarteira      : tickers → subMat → cov → pesos → result  [pura]
+  carteiraValida       : PortfolioResult → bool             [pura]
 
 Simulation.fs
-  combinations         : n → k → seq<int[]>                 [pura]
-  simulateBestPortfolio: seed → nSim → ... → result option  [pura]
-  runOptimization      : ... → PortfolioResult option       [paralelo]
-  benchmark            : ... → unit                         [I/O]
+  combinations              : n → k → seq<int[]>                    [pura]
+  simulateBestPortfolio     : seed → nSim → ... → result option     [pura]
+  simulateBestPortfolioAsync: seed → nSim → ... → Async<result>     [pura]
+  runOptimization           : ... → PortfolioResult option          [paralelo]
+  runOptimizationSequential : ... → PortfolioResult option          [sequencial]
+  benchmark                 : ... → unit                            [I/O]
 ```
 
 *`generateValidWeights` recebe o `Random` como argumento — sem estado global.
 
 ---
-
