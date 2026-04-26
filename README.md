@@ -189,7 +189,9 @@ CPUs available: 8
 
 ### Teste out-of-sample
 
-O teste avalia se a carteira otimizada em dados passados generaliza para o período seguinte, medindo retorno, volatilidade e Sharpe no 1º trimestre de 2025.
+Os resultados apresentados foram gerados com uma amostra reduzida (200 combinações × 100 simulações) para fins de validação. O código completo suporta a execução integral com C(30,20) = 30.045.015 combinações × 1.000.000 simulações; basta remover o Seq.truncate em Simulation.fs e ajustar nSimPerCombo em Program.fs.
+
+![alt text](image.png)
 
 ---
 
