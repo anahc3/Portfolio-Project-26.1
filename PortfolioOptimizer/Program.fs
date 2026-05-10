@@ -12,7 +12,7 @@ let trainEnd   = DateTime(2025, 12, 31)
 let testStart  = DateTime(2025, 1, 1)
 let testEnd    = DateTime(2025, 3, 31)
 
-let nSelect      = 20
+let nSelect      = 25
 let nSimPerCombo = 1_000_000
 let cacheFile    = "returns_cache.csv"
 

@@ -8,7 +8,7 @@ Otimização de carteiras de ações do índice Dow Jones via simulação de Mon
 
 ## Contexto
 
-Um portfolio manager deseja descobrir a melhor alocação entre 20 das 30 ações do Dow Jones, maximizando o **Sharpe Ratio**:
+Um portfolio manager deseja descobrir a melhor alocação entre 25 ou mais das 30 ações do Dow Jones, maximizando o **Sharpe Ratio**:
 
 $$SR = \frac{\mu - r_{free}}{\sigma}$$
 
@@ -20,10 +20,10 @@ $$\max_w \frac{\mu}{\sigma} \quad \text{s.t.} \quad \sum w_i = 1,\; 0 \le w_i \l
 
 | Restrição | Valor |
 |-----------|-------|
-| Ações selecionadas | 20 de 30 |
+| Ações selecionadas | 25 de 30 |
 | Long-only | $w_i \geq 0$ |
 | Concentração máxima | $w_i \leq 0{,}20$ |
-| Combinações possíveis | $\binom{30}{20} \approx 30$ milhões |
+| Combinações possíveis | $\binom{30}{25} = 142.506$ |
 | Simulações por combinação | 1.000.000 |
 
 ---
@@ -106,7 +106,7 @@ dotnet run -c Release -- optimize
 ```
 
 - Busca dados do Yahoo Finance (2º sem. 2025) e salva em `returns_cache.csv`
-- Roda $\binom{30}{20} \approx 30M$ combinações × 1M simulações em paralelo via `Async.Parallel`
+- Roda $\binom{30}{25} = 142.506$ combinações × 1M simulações em paralelo via `Async.Parallel`
 - Imprime a melhor carteira ao final e salva em `best_portfolio.txt`
 
 > ⚠️ **Aviso de tempo**: a execução completa pode levar horas dependendo do hardware. Para testar rapidamente, reduza `nSimPerCombo` em `Program.fs` e adicione `Seq.truncate N` em `Simulation.fs`.
@@ -153,7 +153,7 @@ MRK   MSFT  NKE   PG    SHW   TRV   UNH   V     VZ    WMT
 
 ### Otimização — amostra de validação
 
-> **Nota:** Os resultados abaixo foram gerados com uma amostra reduzida (200 combinações × 100 simulações) para fins de validação. O código completo suporta a execução integral com C(30,20) = 30.045.015 combinações × 1.000.000 simulações — basta remover o `Seq.truncate` em `Simulation.fs` e ajustar `nSimPerCombo` em `Program.fs`.
+> **Nota:** Os resultados abaixo foram gerados com uma amostra reduzida (200 combinações × 100 simulações) para fins de validação. O código completo suporta a execução integral com C(30,25) = 142.506 combinações × 1.000.000 simulações — basta remover o `Seq.truncate` em `Simulation.fs` e ajustar `nSimPerCombo` em `Program.fs`.
 
 ```
 ════════════════════════════════════════
@@ -162,7 +162,7 @@ MRK   MSFT  NKE   PG    SHW   TRV   UNH   V     VZ    WMT
  Sharpe Ratio:          3.2871
  Annualized Return:     37.26%
  Annualized Volatility: 11.34%
- Selected Tickers (20):
+ Selected Tickers (25):
    GS      11.63%
    JNJ     11.49%
    TRV     10.80%
@@ -236,4 +236,3 @@ Simulation.fs
 
 *`generateValidWeights` recebe o `Random` como argumento — sem estado global.
 
----
